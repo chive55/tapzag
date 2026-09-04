@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#14120f" />
+  <title>Tapzag</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@500&family=Source+Serif+4:wght@600&display=swap" />
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #14120f; color: #efe7dc; font-family: "IBM Plex Sans", system-ui, sans-serif; overflow: hidden; touch-action: none; }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .hud { position: relative; z-index: 1; pointer-events: none; min-height: 100dvh; display: flex; flex-direction: column; padding: max(1rem, env(safe-area-inset-top)) 1.25rem max(1.25rem, env(safe-area-inset-bottom)); }
+    .top { display: flex; justify-content: space-between; align-items: flex-start; }
+    h1 { margin: 0; font-family: "Source Serif 4", Georgia, serif; font-size: 1.5rem; font-weight: 600; }
+    .tag { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #9a9186; }
+    .score { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 1.85rem; line-height: 1; text-align: right; }
+    .best { margin-top: 0.25rem; font-size: 11px; color: #9a9186; text-align: right; }
+    .hint { margin-top: auto; max-width: 16rem; }
+    .hint h2 { margin: 0; font-family: "Source Serif 4", Georgia, serif; font-size: 1.85rem; line-height: 1.15; }
+    .hint p { margin: 0.5rem 0 0; color: #9a9186; }
+    .run { color: #6e675e; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="hud">
+    <div class="top">
+      <div>
+        <h1>Tapzag</h1>
+        <div class="tag">One tap · keep the line</div>
+      </div>
+      <div>
+        <div class="score" id="score">0</div>
+        <div class="best" id="best">best 0</div>
+      </div>
+    </div>
+    <div class="hint" id="hint"></div>
+  </div>
+  <script>
+    const KEY = (x, z) => x + "," + z;
+    function loadBest() {
+      try { return Number(localStorage.getItem("tapzag-best") || 0); } catch { return 0; }
+    }
+    function saveBest(n) {
+      try { localStorage.setItem("tapzag-best", String(n)); } catch {}
+    }
+    function createWorld(best = loadBest()) {
+      const tiles = new Map();
+      tiles.set(KEY(0, 0), { x: 0, z: 0, coin: false });
+      const w = {
+        phase: "ready", px: 0.5, pz: 0.5, fall: 0, heading: 0, speed: 3.15,
+        tiles, cursorX: 0, cursorZ: 0, cursorDir: 0, streak: 4,
+        score: 0, coins: 0, best, pulse: 0, shake: 0, particles: [],
+      };
+      growPath(w, 48);
+      return w;
+    }
+    function growPath(w, count) {
+      for (let i = 0; i < count; i++) {
+        if (w.streak <= 0 || (w.streak >= 2 && Math.random() < 0.42)) {
+          w.cursorDir = w.cursorDir === 0 ? 1 : 0;
+          w.streak = 1 + (Math.random() < 0.25 ? 0 : Math.random() < 0.5 ? 1 : 2);
+        } else w.streak -= 1;
+        if (w.cursorDir === 0) w.cursorX += 1; else w.cursorZ += 1;
+        const coin = (w.cursorX + w.cursorZ) % 7 === 0;
+        w.tiles.set(KEY(w.cursorX, w.cursorZ), { x: w.cursorX, z: w.cursorZ, coin });
+      }
+    }
+    function prune(w) {
+      const behind = w.px + w.pz - 14;
+      for (const [k, t] of w.tiles) if (t.x + t.z < behind) w.tiles.delete(k);
+    }
+    function burst(w, n, force) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        w.particles.push({
+          x: 0, y: 0,
+          vx: Math.cos(a) * force * (20 + Math.random() * 40),
+          vy: Math.sin(a) * force * (20 + Math.random() * 40),
+          life: 1, max: 0.35 + Math.random() * 0.25,
+        });
+      }
+    }
+    function tap(w) {
+      if (w.phase === "ready") { w.phase = "run"; w.pulse = 1; return; }
+      if (w.phase === "dead") return;
+      w.heading = w.heading === 0 ? 1 : 0;
+      w.pulse = 1;
+      burst(w, 5, 0.4);
+    }
+    function step(w, dt) {
+      const t = Math.min(dt, 0.05);
+      w.pulse = Math.max(0, w.pulse - t * 4);
+      w.shake = Math.max(0, w.shake - t * 2.2);
+      for (const p of w.particles) {
+        p.x += p.vx * t; p.y += p.vy * t; p.vy += 90 * t; p.life -= t / p.max;
+      }
+      w.particles = w.particles.filter((p) => p.life > 0);
+      if (w.phase === "dead") { w.fall += 38 * t; return; }
+      if (w.phase !== "run") return;
+      w.speed = Math.min(7.2, 3.15 + (w.px + w.pz) * 0.045);
+      if (w.heading === 0) w.px += w.speed * t; else w.pz += w.speed * t;
+      const tile = w.tiles.get(KEY(Math.floor(w.px), Math.floor(w.pz)));
+      if (!tile) {
+        w.phase = "dead"; w.shake = 1; burst(w, 16, 1);
+        if (w.score > w.best) { w.best = w.score; saveBest(w.best); }
+        return;
+      }
+      if (tile.coin) { tile.coin = false; w.coins += 1; w.score += 25; burst(w, 8, 0.7); }
+      w.score = Math.max(w.score, Math.floor((w.px + w.pz) * 10) + w.coins * 25);
+      if (w.cursorX + w.cursorZ < w.px + w.pz + 36) growPath(w, 16);
+      prune(w);
+    }
+    function iso(x, z, tw = 46, th = 23) { return { x: (x - z) * tw, y: (x + z) * th }; }
+    function diamond(ctx, x, y, tw, th, fill, edge) {
+      ctx.beginPath();
+      ctx.moveTo(x, y - th); ctx.lineTo(x + tw, y); ctx.lineTo(x, y + th); ctx.lineTo(x - tw, y);
+      ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+      ctx.strokeStyle = edge; ctx.lineWidth = 1; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x - tw, y); ctx.lineTo(x, y + th); ctx.lineTo(x + tw, y);
+      ctx.strokeStyle = "rgba(0,0,0,0.22)"; ctx.stroke();
+    }
+    function draw(ctx, canvas, w) {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const width = canvas.clientWidth, height = canvas.clientHeight;
+      if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
+        canvas.width = Math.floor(width * dpr); canvas.height = Math.floor(height * dpr);
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = "#14120f"; ctx.fillRect(0, 0, width, height);
+      const shake = w.shake * w.shake * 8;
+      const sx = (Math.random() - 0.5) * shake, sy = (Math.random() - 0.5) * shake;
+      const p = iso(w.px, w.pz);
+      const camX = width * 0.5 - p.x + sx, camY = height * 0.58 - p.y + sy;
+      const tiles = [...w.tiles.values()].sort((a, b) => a.x + a.z - (b.x + b.z));
+      for (const tile of tiles) {
+        const c = iso(tile.x + 0.5, tile.z + 0.5);
+        diamond(ctx, camX + c.x, camY + c.y, 44, 22, tile.coin ? "#3a2a22" : "#221e1a", "#2d2823");
+        if (tile.coin) {
+          ctx.beginPath(); ctx.fillStyle = "#c45c3a";
+          ctx.arc(camX + c.x, camY + c.y - 6, 4.2, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      const ball = iso(w.px, w.pz);
+      const by = camY + ball.y - 10 - w.fall, bx = camX + ball.x;
+      ctx.beginPath(); ctx.fillStyle = "rgba(0,0,0,0.28)";
+      ctx.ellipse(bx, camY + ball.y + 6 + w.fall * 0.15, 10, 5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.fillStyle = "#efe7dc"; ctx.arc(bx, by, 8 + w.pulse * 2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.fillStyle = "#c45c3a"; ctx.arc(bx - 2, by - 2, 3, 0, Math.PI * 2); ctx.fill();
+      for (const part of w.particles) {
+        ctx.globalAlpha = Math.max(0, part.life);
+        ctx.fillStyle = "#c45c3a"; ctx.fillRect(bx + part.x, by + part.y, 3, 3);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const canvas = document.getElementById("c");
+    const hint = document.getElementById("hint");
+    const scoreEl = document.getElementById("score");
+    const bestEl = document.getElementById("best");
+    let world = createWorld();
+    function renderHint() {
+      if (world.phase === "ready") hint.innerHTML = "<h2>Tap to turn.</h2><p>Stay on the diamonds.</p>";
+      else if (world.phase === "dead") hint.innerHTML = "<h2>Off the edge.</h2><p>Tap to run it back.</p>";
+      else hint.innerHTML = '<p class="run">Tap anywhere · ' + world.coins + " motes</p>';
+      scoreEl.textContent = String(world.score);
+      bestEl.textContent = "best " + world.best;
+    }
+    function onTap() {
+      if (world.phase === "dead") world = createWorld(Math.max(world.best, world.score));
+      else tap(world);
+      renderHint();
+    }
+    canvas.addEventListener("pointerdown", (e) => { e.preventDefault(); onTap(); });
+    window.addEventListener("keydown", (e) => {
+      if (["Space", "ArrowLeft", "ArrowRight", "KeyA", "KeyD"].includes(e.code)) {
+        e.preventDefault(); onTap();
+      }
+    });
+    let last = performance.now(), acc = 0;
+    function loop(now) {
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      step(world, dt);
+      draw(canvas.getContext("2d"), canvas, world);
+      acc += dt;
+      if (acc > 0.08) { acc = 0; renderHint(); }
+      requestAnimationFrame(loop);
+    }
+    renderHint();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
